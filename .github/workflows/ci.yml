@@ -1,0 +1,91 @@
+name: Build and test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host-tests:
+    name: Host unit tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up GCC
+        run: sudo apt-get update && sudo apt-get install -y gcc
+
+      - name: Run alarm manager tests
+        run: |
+          gcc -std=c11 -Wall -Wextra -Werror \
+            -I src tests/unit/test_alarm_manager.c \
+            src/sensors/sensor_manager.c \
+            src/alarms/alarm_manager.c \
+            src/simulator/sensor_simulator.c \
+            -o /tmp/test_alarm_manager
+          /tmp/test_alarm_manager
+
+      - name: Run simulator scenario tests
+        run: |
+          gcc -std=c11 -Wall -Wextra -Werror \
+            -I src tests/unit/test_scenarios.c \
+            src/sensors/sensor_manager.c \
+            src/alarms/alarm_manager.c \
+            src/simulator/sensor_simulator.c \
+            -o /tmp/test_scenarios
+          /tmp/test_scenarios
+
+      - name: Run CSV converter tests
+        run: python tests/unit/test_log_to_csv.py
+
+  build-native-sim:
+    name: Zephyr native_sim build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install host build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build gcc g++ git wget xz-utils \
+            device-tree-compiler gperf ccache
+
+      - name: Install Zephyr SDK 1.0.1
+        run: |
+          sdk_archive=zephyr-sdk-1.0.1_linux-x86_64_gnu.tar.xz
+          sdk_url=https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v1.0.1/$sdk_archive
+          wget -q "$sdk_url"
+          tar -xf "$sdk_archive"
+          ./zephyr-sdk-1.0.1/setup.sh -t all -c
+          echo "ZEPHYR_SDK_INSTALL_DIR=$HOME/zephyr-sdk-1.0.1" >> "$GITHUB_ENV"
+
+      - name: Initialize Zephyr workspace
+        run: |
+          python -m venv "$HOME/zephyrproject/.venv"
+          source "$HOME/zephyrproject/.venv/bin/activate"
+          python -m pip install --upgrade pip west
+          west init \
+            -m https://github.com/zephyrproject-rtos/zephyr \
+            --mr v4.5.0-rc1 "$HOME/zephyrproject"
+          cd "$HOME/zephyrproject"
+          west update
+          west zephyr-export
+          python -m pip install -r zephyr/scripts/requirements.txt
+
+      - name: Build application for native_sim
+        run: |
+          source "$HOME/zephyrproject/.venv/bin/activate"
+          cd "$HOME/zephyrproject"
+          west build -b native_sim "$GITHUB_WORKSPACE" \
+            -d "$GITHUB_WORKSPACE/build"
